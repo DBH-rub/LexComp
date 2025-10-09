@@ -61,16 +61,16 @@ The procedure assesses measures of lexical similarity to the reference lexicon f
 
 The workflow is structured into seven steps, which are explained below. The R code corresponds directly to these steps and also includes suggestions for visualizing the results.
 
-- **Preparations**: 
+## Preparations: 
 
 Required R packages are loaded (and installed if missing). The number of computing cores to be used for parallel processing is also specified.
 
 
-- **Step 1**: Parameter setting
+## Step 1: Parameter setting
 
 Model parameters are defined, including the specification of the desired n-gram settings.
 
-- **Step 2**: Providing lexicons
+## Step 2: Providing lexicons
 
 Both the reference lexicon and the test lexicon are loaded. In the example setup, these lexicons consist of short lists of artificial items, which the user can replace or expand as needed. The reference lexicon contains the items against which the test stimuli will be compared. The test lexicon contains the items for which wordlikeness measures are computed.
 
@@ -78,20 +78,20 @@ In our example, these items are modeled after typical pseudoword stimuli in an a
 
 For comparison with a real lexicon, we provide an English reference lexicon (`EN_ref_lex.tsv`), which is derived from SUBTLEX-US – a frequency lexicon of US English [@Brysbaert2009] and MFA Dictionary v2.2.1 – a US English pronunciation dictionary in the International Phonetic Alphabet [@mfa_english_us_mfa_dictionary_2023]. First, we restricted the lexical entries of the frequency lexicon in two ways: i) only the entries that are indicated as a valid word with a spellchecker, Hunspell (US English) [@hunspell2023], and ii) only the entries that have a contextual diversity value above 3 (i.e., only words that have appeared in at least four subtitle files were kept). Second, we restricted the pronunciation dictionary to contain only one pronunciation per lexical entry. If a lexical entry contains multiple pronunciations, then the pronunciation with the highest probability estimate (provided by the dictionary) was chosen. Finally, the frequency lexicon and the pronunciation lexicon were merged and 33,728 entries with both frequency information and a pronunciation were kept. The user can load this lexicon `EN_ref_lex.tsv` as a reference lexicon to estimate wordlikeness measures for English.
 
-- **Step 3**: Providing phonological features
+## Step 3: Providing phonological features
 
 To prepare the translation of IPA entries in both lexicons into phonological features we need to provide this information about phonological features. For this purpose the phonological distinctive feature systems from PHOIBLE [@phoible] is loaded: `phoible-segments-features.tsv`.  For detailed explanation of this feature set: see https://github.com/phoible/dev/tree/master/raw-data/FEATURES. To obtain this particular version of the feature set: https://github.com/phoible/dev/blob/c71dce66f736b161e42f335f253c35706e217dbe/raw-data/FEATURES/phoible-segments-features.tsv. The feature table provides phonological feature specifications for all IPA symbols. During the procedure it is trimmed to the needs of our study: IPA symbols not occurring in the data sets are identified and deleted and additional IPA symbols can be added.
 
-- **Step 4**: Building NDL representations
+## Step 4: Building NDL representations
 
 IPA entries in both lexicons need to be translated into phonological features. 
 A function is being introduced which takes in the string of segments (word in IPA transcription) and translates it into ndl-formatted feature ngrams as defined in Step 1: Parameter setting. This function `featurengram()` is then applied to the data set of both the reference and the test lexicon. All lexical entries in both lexicons are translated into ndl-cues, where the cues have the format of phonological feature bigrams. As a result, the lexicons consist not only of segments but also of feature bigrams.
 
-- **Step 5**: Model training with reference lexicon
+## Step 5: Model training with reference lexicon
 
 In this step, we train the NDL model. The associative network now represents a lexicon consisting of the reference lexicon in phonological feature bigrams.
 
-- **Step 6**: Lexical comparison
+## Step 6: Lexical comparison
 
 The network is now being evaluated with respect to our items of interest in the test lexicon and results are displayed in a table. For each lexical entry in the test lexicon, several activation-based measurements based on the reference lexicon are provided: 
 
@@ -105,11 +105,11 @@ $$|a|_{2} = \left ( \sum_{i}^{}|a|^2 \right )^\frac{1}{2}$$
 
 `L1norm`, `L2norm` and `MADnorm` tend to be highly correlated [@Milin2017;@ChuangBaayen2021DiscriminativeLearningandtheLexicon;@Arnold2017]. `L1norm` is the more commonly reported measures by users of NDL.
 
-- **Step 7**: Output file with estimated lexical similarity
+## Step 7: Output file with estimated lexical similarity
 
 The evaluation results are collected in an output table.
 
-- **Visualizations**:
+## Visualizations:
 
 This section provides three visualization suggestions for the user which may be helpful for identifying test items that are outliers (particularly wordlike or nonwordlike).
 The first code visualizes results using only one variable of wordlikeness at a time using optimal (weighted) univariate clustering.
@@ -137,13 +137,13 @@ The procedure assesses measures of lexical similarity to the reference lexicon f
 
 Just as with the NDL implementation, the workflow is structured into seven steps, which are explained below, with Step 2 and 3 being identical for both NDL and GNM implementations. The R code corresponds directly to these steps and also includes suggestions for visualizing the results.
 
-- **Preparations**: 
+## Preparations: 
 
 
 Required R packages are loaded (and installed if missing). The number of computing cores to be used for parallel processing is also specified.
 
 
-- **Step 1**: Parameter setting
+## Step 1: Parameter setting
 
 Here, we define the parameters for our modeling. 
 
@@ -157,20 +157,20 @@ Parameters for the frequency effect include whether of not to enable frequency w
 
 Two additional parameters allow for users to designate the frequency type of the reference lexicon (`reference_frequency_type`, the possible types: RAW (raw token frequency, the default) and FPM (frequency per million)), as well as the frequency to use (`frequency_normalised_tf`, default: FALSE which uses raw frequency values, while TRUE uses frequency per million). If `frequency_normalised_tf` is TRUE and `reference_frequency_type` is 'RAW', then it would normalize your RAW frequency by assuming the sum of your token frequency count is the corpus size.
 
-- **Step 2**: Providing lexicons
+## Step 2: Providing lexicons
 
 This step is identical to step 2 of the **NDL Implementation**:
 Both the reference lexicon and test lexicon are providedin IPA trancriptions. The reference lexicon contains the lexicon against which the test stimuli shall be compared. The test lexicon contains items for which we want to examine wordlikeness measures. Our example lexicons consist of short lists of artificial items, both containing few items, the `ref_lex.csv` as well as the `test_lex.csv`. While the reference lexicon may contain Items like \<galo\> and \<gemo\>, the test lexicon contains pseudowords like \<banu\> and \<beda\>.
 
 As explained in step 2 of the **NDL Implementation**, the users can make use of the real English lexicon we provided `EN_ref_lex.tsv`. 
 
-- **Step 3**: Providing phonological features
+## Step 3: Providing phonological features
 
 This step is identical to step 2 of the **NDL Implementation**:
 To prepare the translation of IPA entries in both lexicons into phonological features we use the PHOIBLE [@phoible] feature table `phoible-segments-features.tsv` that provides phonological feature specifications for all IPA symbols. During the procedure it is trimmed to the needs of our study: IPA symbols not occurring in the data sets are identified and deleted and additional IPA symbols can be added.
 
 
-- **Step 4**: Building a cost matrix for string similarity
+## Step 4: Building a cost matrix for string similarity
 
 The goal of this step is to create a cost matrix for the direct comparison of two lexicons. Individual sounds are compared based on the values in the feature table. The cost matrix finally contains distance values between 0 and 1. The exact cost of a change depends on whether there is no change (identical), or if it involves a substitution, a insertion or a deletion. As explained and defined in step 2 of the **Parameter setting** the cost for identical sounds (`iden`), that is, no change, is 0 (min: 0, max: 1, default: 0), the cost for insertion or deletion of segments is (min: 0, max: 1, default: 0.7) [@albright2007natural]. 
 
@@ -178,7 +178,7 @@ For substitutions we apply the function `phonDistMetric_FeatureMismatchWithUnder
 
 Finally, the cost matrix is generated. It stores all possible pairwise combinations of sounds, as well as all possible deletions and insertions. The cost value in each cell indicates how distant the sounds to be compared are. A small number means little distance, i.e. greater similarity between the sounds. A greater number means more distance, i.e. smaller similarity between the sounds.
 
-- **Step 5**: Preprocessing: reference lexicon frequency 
+## Step 5: Preprocessing: reference lexicon frequency 
 
 The present step prepares the reference lexicon for the comparison to the test lexicon in the next step. Preprocessing consists of several options to possibly adjust frequency information for later weighting of scores:
 
@@ -186,18 +186,18 @@ The user clarifies with respective designation whether the frequency measure the
 There are several options: first, if the user has provided raw frequencies but wanted to normalize it, then (and only then) it is normalized in this step as explained as follows: The raw frequencies across all items are considered to be the corpus size which functions as a base to normalize individual raw frequency values to a frequency-per-million value. Second, if frequency is already in the format of frequency per million, then nothing happens. Third, if the user has normalized frequency values and wants raw frequency values instead, this code transforms normalized data into raw frequencies.
 Finally, if the chosen frequency type (raw or frequency-per-million) has values that are too small for log10 transformation, then it will be smoothed.
 
-- **Step 6**: Estimate GNM values for test items
+## Step 6: Estimate GNM values for test items
 
 In this step, we estimate a GNM similarity value for each test item. Hereby, every test items is evaluated against the reference lexicon. More specifically, based on the cost matrix the psychological distance is generated between the test item and all the words in the reference lexicon. The result is a vector of distances, one for each test item. In a next step, the vector of distance scores is weighted according to the decay and the frequency. Frequency and decay weighting works as follows:
 First, using the Distance decay parameter [@albright2007natural], values are weighted in such a way that more distant reference items are weighted less important and closer refercne items are weighted more important. Second, the algorithm weights distance scores differently based on the chosen frequency information (as chosen by the user in earlier steps): In general, a more frequent item from the reference lexicon receives more impact and weight than a less frequent item. The result for each test item is a vector of distances that have been weighted according to the distance and the frequency information available.
 
 In the final step, all numbers in the vector are summed up and represent the GNM distance value for the specific test item. 
 
-- **Step 7**: Output file with estimated lexical similarity
+## Step 7: Output file with estimated lexical similarity
 
 We collect the evaluation results in an output table and save it. The output table contains each item together with its similarity value as derived from this procedure.
 
-- **Visualizations**:
+## Visualizations:
 
 We provide a visualization suggestion for the user which may be helpful for identifying test items that are outliers (particularly wordlike or nonwordlike) according to the GNM analysis. Results are visualized over the variable of GNM score per item using optimal (weighted) univariate clustering.
 
