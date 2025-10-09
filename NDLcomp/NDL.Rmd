@@ -1,0 +1,450 @@
+---
+title: "Comparing lexicons using NDL"
+author: "DBH, KT"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: 
+      collapsed: true
+    number_sections: false
+    theme: united
+    df_print: paged
+    code_folding: show
+    results: hide
+---
+ 
+# Preparations
+
+We load the necessary libraries and set the number of cores
+
+```{r Preparation, message=FALSE}
+rm(list=ls())
+
+# Install libraries if not installed already and load libraries
+if(!require(checkmate)){install.packages("checkmate")}
+if(!require(ngram)){install.packages("ngram")}
+if(!require(ndl)){install.packages("ndl")}
+if(!require(miscTools)){install.packages("miscTools")}
+if(!require(pbmcapply)){install.packages("pbmcapply")}
+if(!require(parallel)){install.packages("parallel")}
+if(!require(DT)){install.packages("DT")}
+if(!require(Ckmeans.1d.dp)){install.packages("Ckmeans.1d.dp")}
+if(!require(RColorBrewer)){install.packages("RColorBrewer")}
+if(!require(ggplot2)){install.packages("ggplot2")}
+if(!require(ggrepel)){install.packages("ggrepel")}
+if(!require(factoextra)){install.packages("factoextra")}
+if(!require(GGally)){install.packages("GGally")}
+if(!require(viridis)){install.packages("viridis")}
+
+# The number of computing cores to use. The default is to use all available cores minus 2
+reserved_cores = 2 # reserved some cores for background tasks
+Cores = detectCores() - reserved_cores
+```
+
+# Step 1: Parameter setting 
+We define the parameters for our modeling. With the present code we use bigrams. For unigrams, one need to set both ngram.min and ngram.max to 1, for trigrams to 3. For both unigrams and bigrams set ngram.min to 1 and ngram.max to 2.
+
+```{r Step 1: Parameter setting}
+ngram.min = 2
+ngram.max = 2
+
+checkParameters <- function(ngram.min,
+                            ngram.max
+                            ){
+  # Check parameters. It will throw an error message if any of them are FALSE
+  assert(
+    checkmate::checkNumber(ngram.min),
+    checkmate::checkNumber(ngram.max),
+    (ngram.min <= ngram.max),
+    combine = "and"
+  )
+}
+checkParameters(ngram.min,
+                ngram.max)
+
+
+
+```
+
+# Step 2: Providing lexicons
+ 
+With this code we load in the reference lexicon and the test lexicon as lists of words in IPA transcription. 
+```{r Step 2a: Providing lexicons}
+ref.lexicon = read.table('data/lexicon/ref_lex.csv', sep='\t',header=FALSE)
+test.lexicon = read.table('data/lexicon/test_lex.csv', sep='\t',header=FALSE)
+```
+
+To prepare the analysis we need two more columns, a frequency column which is set to 1 as we deal with type frequency in our case. To be able to integrate lexical entries into the associative network we need to provide the information about the start and end of the entry: The new column IPA uses the original entry and adds margins as '#". 
+We also copied the column as an additional outcome column.
+
+```{r Step 2b: Providing lexicons}
+# reference lexicon
+ref.lexicon$Outcomes = ref.lexicon$V1
+ref.lexicon$Frequency = 1
+ref.lexicon$IPA = paste('#',ref.lexicon$V1,'#')
+ref.lexicon$V1 = NULL
+
+# test lexicon
+test.lexicon$Outcomes = test.lexicon$V1
+test.lexicon$Frequency = 1
+test.lexicon$IPA = paste('#',test.lexicon$V1,'#')
+test.lexicon$V1 = NULL
+```
+
+
+# Step 3: Providing phonological features
+
+To translate IPA symbols into phonological features we read in a universal feature table. It contains phonological feature specifications for IPA symbols.
+
+```{r Step 3a: Phonological features}
+feature.table.df = read.table('data/featureChart/phoible-segments-features.tsv',
+   sep='\t',header=TRUE)
+
+```
+The feature table needs to be trimmed such that the table is reduced to only those IPA symbols which are relevant in the reference lexicon. Therefore both reference an test items and put together into one vector. IPA entries are checked against the feature table. Missing features are identified. 
+
+```{r Step 3b: Phonological features,  results=FALSE}
+all.lexicon = rbind(ref.lexicon, test.lexicon)
+
+# Check if all symbols are covered in the feature.table
+# This function extracts all unique IPA segments from a vector of IPA strings.
+grabSegmentTypes =  function(IPA_strings){
+  # Check parameters
+  checkmate::assert_character(IPA_strings)
+  
+  w=strsplit(IPA_strings,' ')
+  w= unlist(w)
+  seg.types = unique(w)
+  return(seg.types)
+}
+
+# This function checks if all vector of IPA strings are found in feature table. It returns the missing segments.
+checkIPAinFeatTable =  function(IPA_strings,feature.table.df){
+  # Check parameters
+  checkmate::assert_character(IPA_strings)
+  checkmate::assert_data_frame(feature.table.df)
+  
+  seg.types = grabSegmentTypes(IPA_strings)
+  missing_IPAs = seg.types[!(seg.types %in% feature.table.df$segment)]
+  return(missing_IPAs)
+}
+
+Missing_IPAs = checkIPAinFeatTable(all.lexicon$IPA,feature.table.df)
+Missing_IPAs = setdiff(Missing_IPAs,'#')
+if (length(Missing_IPAs) == 0) {
+  print ("No missing IPA symbols")
+} else {
+  print (paste0('Missing ', length(Missing_IPAs), " IPA symbols: ", paste0(Missing_IPAs, collapse = ' ')))
+  print ('Please add these missing IPA symbols and their feature values to `feature.table.df` either in the text file itself or add in R after you have loaded the table')
+  knitr::knit_exit() 
+}
+```
+Redundant features are identified and deleted. 
+```{r Step 3c: Phonological features, results=FALSE}
+# These lines reduces the feature table to only the segments that we need, identifying unique IPA symbols used in the current data set
+seg.types = grabSegmentTypes(all.lexicon$IPA)
+feature.table.df = subset(feature.table.df,segment%in%seg.types)
+
+# These lines reduces the features that are not needed, i.e. the features with the same value across all segments.
+redund_cols = c()
+for (col in names(feature.table.df)) {
+  if (dim(unique(feature.table.df[col]))[1] == 1){
+    redund_cols = append(redund_cols,col)
+  }
+}
+
+print(paste0(length(redund_cols), ' redundent features were found: ', paste0(redund_cols, collapse = ', ')))
+# Check dimensions before trimming
+dimensions_before_trimming = dim(feature.table.df)
+# Trimming
+feature.table.df = feature.table.df[ , -which(names(feature.table.df) %in% redund_cols)]
+# Check dimensions after trimming
+dimensions_after_trimming = dim(feature.table.df)
+
+paste0('Before feature trimming: ', dimensions_before_trimming[1], ' segments and ', dimensions_before_trimming[2], ' features')
+paste0('After feature trimming: ', dimensions_after_trimming[1], ' segments and ', dimensions_after_trimming[2], ' features')
+```
+
+Finally, word boundary is added as an additional segment with # as value for every feature. 
+```{r Step 3d: Phonological features}
+# Add word boundary
+feature.table.df = data.frame(
+  insertRow(
+    as.matrix(feature.table.df), # turn the feature table into a matrix
+    dim(feature.table.df)[1]+1, # add features to the last row
+    rep('#',dim(feature.table.df)[2]) # add feature values for the word boundary.
+    )
+  )
+# Look at the added row
+feature.table.df[dim(feature.table.df)[1],]
+```
+
+# Step 4: Building NDL representations
+
+A translation function is now being defined called `featurengram()`. This takes in string of segments (word in IPA transcription) and translates it into ndl-formatted feature ngrams as defined in parameter setting in step 1. With the present settings, we have bigrams.
+
+```{r Step 4a: Building NDL representations}
+# Defining featuregram()
+# Note that this function can be used as a standalone function
+# featurengram(IPA_strings[1],feature.table.df_ = feature.table.df,ngram.min_ = 1,ngram.max_ = 1)
+# If you do not specify the values for feature.table.df_, ngram.min_ and ngram.max_. The global variables will be used.
+featurengram <- function( str_, 
+                          feature.table.df_ = feature.table.df, 
+                          ngram.min_ = ngram.min, 
+                          ngram.max_ = ngram.max){
+  
+  # Check parameters
+  checkmate::assert_string(str_)
+  checkmate::assert_data_frame(feature.table.df)
+  checkmate::assert_number(ngram.min)
+  checkmate::assert_number(ngram.max)
+  
+  cur_segs = unlist(strsplit(str_,' '))
+  features = setdiff(names(feature.table.df_),'segment')
+  features_len = length(features)
+  featcues_vec = rep(list(''),features_len)
+  
+  for (feature_idx in c(1:features_len)){
+      
+      feature = features[feature_idx]
+      cur_features = rep('',length(cur_segs))
+      
+      for (cur_seg_idx in c(1:length(cur_segs))) {
+          cur_seg = cur_segs[cur_seg_idx]
+          cur_features[cur_seg_idx] =
+          as.character(subset(feature.table.df_,segment == cur_seg)[[feature]])
+      }
+      
+      cur_features_str_ = paste0(cur_features,collapse=' ')
+      cues=ngram_asweka(cur_features_str_,min=ngram.min_,max=ngram.max_,sep=' ')
+      
+      featcues = paste0(feature,cues)
+    
+      # The following line is to remove the feature label for the word boundary feature value for unigrams 
+      # For bigrams or higher, word boundary is used as a feature value for a specific feature, e.g., "syllabic#-" would be a bigram featural reprsentation for the syllabic feature for a word-initial non-syllabic segment
+      # However, word boundary does not actually have a featural representation, therefore
+      # for unigrams, word boundary should just be represented as a segment "#", and not by feature e.g., "syllabic#" or "click#"
+      featcues[featcues == paste0(feature,'#')] <- '#'
+      
+      featcues_vec[[feature_idx]] = featcues
+  }
+  
+  featcues_vec = unlist(featcues_vec)
+  cue_str = paste0(gsub(' ','',featcues_vec),collapse='_')
+  
+  return(cue_str)
+}
+
+
+```
+
+As a next step we add feature representations to the data table of the reference lexicon and prepare the NDL analysis, defining features as Cues: The next chunk translates the list of lexical entries in my reference lexicon into ndl-cues, where the cues have the format of phonological feature bigrams (as defined in Step 1). The result is a lexicon consisting not only of segments but consisting of features.
+
+Note: Parallelization (mc.core > 1) works only on *nix (Linux, Unix such as macOS) system due to the lack of fork() functionality, which is essential for mcapply, on Windows.
+
+```{r Step 4b: Building NDL representations}
+# For every entry in the reference lexicon, translate it into a featural representation 
+IPA_strings=ref.lexicon$IPA
+X = pbmclapply(IPA_strings,featurengram,mc.cores=Cores)
+Cues = unlist(X)
+
+# Add this information in a cue column.
+ref.lexicon$Cues = Cues
+
+# Delete columns IPA 
+ref.lexicon$IPA <-NULL
+head(ref.lexicon)
+```
+Likewise, we prepare the test items by using featuregram() to translate segments to feature bigram representations.  
+
+```{r Step 4c: Building NDL representations}
+# For every entry in the test lexicon, translate it into a featural representation 
+IPA_strings=test.lexicon$IPA
+X=pbmclapply(IPA_strings,featurengram,mc.cores=Cores)
+Cues = unlist(X) 
+
+# Add this information in a cue column.
+test.lexicon$Cues = Cues
+
+# Delete columns IPA 
+test.lexicon$IPA <-NULL
+head(test.lexicon)
+```
+
+
+
+
+# Step 5: Model training with reference lexicon
+
+Here, we run the NDL analysis. The associative network now represents a lexicon consisting of the reference lexicon in phonological feature bigrams.
+
+```{r Step 5: Model training, message = FALSE}
+ndl.network <- estimateWeights(cuesOutcomes=ref.lexicon,hasUnicode=TRUE,verbose=TRUE)
+```
+
+
+
+# Step 6: Lexical comparison
+
+For each item in the test lexicon this next chunk provides activations based on the reference lexicon. We evaluate the L1norm, L2norm, MADnorm as well as the most activated training outcome and the most activated training outcome for each of the test item.
+
+```{r Step 6: Lexical comparison}
+desiredItems <- data.frame(Cues=test.lexicon$Cues)
+desiredItems$Outcomes <- ""
+test.list.activations=estimateActivations(desiredItems,ndl.network,hasUnicode=TRUE,verbose=TRUE)
+
+# This function that returns the maximum activation value across the training lexicon outcomes for each of the test item, i.e., it is the activation value of the most activated outcome in the training lexicon. 
+max.activation = apply(test.list.activations$activationMatrix, 1, function(x) max(x))
+
+# This function returns the L1norm of the activation values for each of the test item
+L1norm = apply(test.list.activations$activationMatrix, 1, function(x) sum(abs(x)))
+
+# This function returns the L2norm of the activation values for each of the test item
+norm_vec <- function(x) sqrt(sum(x^2))
+L2norm = apply(test.list.activations$activationMatrix, 1, function(x) norm(x,type='2'))
+
+# This function returns the MADnorm of the activation values for each of the test item
+MADnorm = apply(test.list.activations$activationMatrix, 1, function(x) mad(x))
+
+# This function returns the most activated training outcome for each of the test item
+max.act.cand = colnames(test.list.activations$activationMatrix)[apply(test.list.activations$activationMatrix, 1, function(x) sum(which.max(x)))]
+```
+
+# Step 7: Output file with estimated lexical similarity
+
+Preparing an output table with NDL measures per item. 
+```{r Step 7: Output file}
+test.lexicon$Frequency = NULL
+test.lexicon$Cues = NULL
+
+test.list.with.wordlikeness = test.lexicon
+test.list.with.wordlikeness$L1norm = L1norm
+test.list.with.wordlikeness$L2norm = L2norm
+test.list.with.wordlikeness$MADnorm = MADnorm
+test.list.with.wordlikeness$maxActValue = max.activation
+test.list.with.wordlikeness$maxActCandidate = max.act.cand
+
+# Using the DT library, we can allow users to search with a data table.
+datatable(test.list.with.wordlikeness,options = list(autoWidth = TRUE), filter = list(
+  position = 'top', clear = FALSE))
+
+# Write as a tsv (tab delimited file)
+write.table(test.list.with.wordlikeness, file ="data/output/items.with.wordlikelihood.tsv",sep='\t')
+```
+
+# Visualisation
+
+This visualisation can be useful for identifying test item that are outliers (particularly wordlike or nonwordlike).
+
+## Visualisation: optimal (weighted) univariate clustering
+
+The following code visualizes results using only one variable of wordlikeness at a time using optimal (weighted) univariate clustering.
+```{r Visualisation 1}
+# Users can select one variable from the following 
+#"L1norm","L2norm",'MADnorm','maxActValue'
+word.likeliness.variables = c("L1norm","L2norm",'MADnorm','maxActValue')
+for (word.likeliness.variable in word.likeliness.variables) {
+    
+    test.list.df <- test.list.with.wordlikeness[,c("Outcomes",word.likeliness.variable)]
+    
+    # Source: https://cran.r-project.org/web/packages/Ckmeans.1d.dp/vignettes/Ckmeans.1d.dp.html
+    result <- Ckmeans.1d.dp(test.list.df[,word.likeliness.variable])
+    k <- max(result$cluster)
+    colors <- brewer.pal(k, "Dark2")
+    
+    # Add cluster into to dataframe
+    cluster_center.df = data.frame(cluster = c(1:length(result$centers)), centers = result$centers)
+    test.list.df$cluster = result$cluster
+    test.list.df = merge(test.list.df,cluster_center.df, by.x= "cluster", by.y= "cluster")
+    test.list.df = test.list.df[
+      with(test.list.df, order(test.list.df$cluster, test.list.df[,word.likeliness.variable])),
+    ]
+    test.list.df = test.list.df[,c('Outcomes',word.likeliness.variable,"cluster",'centers')]
+    
+    # Create a ggplot object
+    p <- ggplot(test.list.df, aes(x = c(1:dim(test.list.df)[1]),
+                                  y = test.list.df[,2], 
+                                  color = factor(cluster), shape = factor(cluster), label = Outcomes)) +
+      geom_point(size = 3) +
+      geom_label_repel(aes(label = Outcomes),
+                      box.padding   = 0.35, 
+                      point.padding = 0.5,
+                      min.segment.length = 0,
+                      force_pull = 0.5,
+                      max.overlaps = 100,
+                      direction = 'y',
+                      segment.color = 'grey50',max.time=10)+
+      # Add dashed lines for cluster centers
+      geom_hline(data = test.list.df, aes(yintercept = centers,color = factor(cluster)), linetype = "dashed",  linewidth = 1, alpha = 0.5) +
+
+      
+      # Add titles and labels
+      labs(title = "Optimal univariate clustering with k estimated",
+           subtitle = paste("Number of clusters is estimated to be", k),
+           x = "Item index (sorted by cluster number, low to high)",y=word.likeliness.variable) +
+      # Add legend
+      scale_color_manual(values = colors[1:k], name = "Cluster") +
+      scale_shape_manual(values = 1:k, name = "Cluster") +
+      theme(legend.position = "top")
+    
+    # Print the ggplot object
+    print(p)
+}
+```
+
+
+## Visualisation: PCA
+
+The following code visualizes results using multiple variables of wordlikeness using PCA.
+Create principle components and plot the first two components and visualize each item in a 2-d space
+along with each of the individual variables and their relationship with the the components.
+
+```{r Visualisation 2}
+# Users can add or remove variables from the following vector
+word.likeliness.variables = c("L1norm","L2norm",'MADnorm','maxActValue')
+
+test.list.df <- test.list.with.wordlikeness[,word.likeliness.variables]
+row.names(test.list.df) = test.list.with.wordlikeness$Outcomes
+
+test.pca <- prcomp(test.list.df, scale = TRUE)
+fviz_pca_biplot(test.pca, repel = TRUE,
+                col.var = "#2E9FDF", # Variables color
+                col.ind = "#696969"  # Individuals color
+                )
+```
+
+## Visualisation: parallel coordinate plot 
+
+The following code visualizes results using multiple variables of wordlikeness with a parallel coordinate plot.
+This is useful as it connects all wordlikeness variables, and each item is represented as a line.
+One can spot the odd item that deviates from the rest for all of the variables or just one variable.
+
+```{r Visualisation 3}
+
+ggparcoord(test.list.with.wordlikeness,
+    groupColumn = 1,
+    columns = 2:5, 
+    scale="globalminmax",
+    showPoints = TRUE, 
+    title = "No scaling",
+    alphaLines = 0.3
+    ) + 
+  scale_color_viridis(discrete=TRUE) +
+  # theme_ipsum()+
+  theme(
+    # legend.position="none",
+    plot.title = element_text(size=13)
+  ) +
+  xlab("")
+
+```
+
+# Session Info
+
+```{r}
+sI=sessionInfo()
+print(sI, RNG = FALSE, locale = FALSE)
+```
+
