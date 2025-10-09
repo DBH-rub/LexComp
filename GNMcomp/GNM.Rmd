@@ -1,0 +1,521 @@
+---
+title: "Comparing lexicons using GNM"
+author: "DBH, KT"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: 
+      collapsed: true
+    number_sections: false
+    theme: united
+    df_print: paged
+    code_folding: show
+    results: hide
+---
+ 
+# Preparations
+
+We load the necessary libraries and set the number of cores
+
+```{r Preparation, message=FALSE}
+rm(list=ls())
+
+# Install libraries if not installed already and load libraries
+if(!require(checkmate)){install.packages("checkmate")}
+if(!require(lingdist)){install.packages("lingdist")}
+if(!require(parallel)){install.packages("parallel")}
+if(!require(DT)){install.packages("DT")}
+if(!require(Ckmeans.1d.dp)){install.packages("Ckmeans.1d.dp")}
+if(!require(RColorBrewer)){install.packages("RColorBrewer")}
+if(!require(ggplot2)){install.packages("ggplot2")}
+if(!require(ggrepel)){install.packages("ggrepel")}
+if(!require(factoextra)){install.packages("factoextra")}
+if(!require(GGally)){install.packages("GGally")}
+if(!require(viridis)){install.packages("viridis")}
+if(!require(ragg)){install.packages("ragg")}
+# The number of computing cores to use. The default is to use all available cores minus 2
+reserved_cores = 2 # reserved some cores for background tasks
+Cores = detectCores() - reserved_cores
+```
+
+
+
+# Step 1: Parameter setting 
+We define the parameters for our modeling. There are three general free parameters: the exponetial parameter (`D`), the cost for correct segment matches (`iden`), and the cost of insertion and deletion (`indel`).
+
+```{r Step 1: Parameter setting}
+###################################
+## Parameters: String similarity ##
+###################################
+
+## Cost for matched segments (min: 0, max: 1, default: 0)
+iden = 0
+
+## Cost for insertion or deletion of segments (min: 0, max: 1, default: 0.7)
+indel = 0.7
+## Albright (2007)'s simulation uses the value 0.7, which we will use as the default.
+## Note that Albright's alignment tool uses 0.6 (reference: https://web.mit.edu/albright/www/software/Alignment.zip)
+## "The default is set to .6, which seems to yield intuitive alignments in a large number of cases." in `ReadMe.txt`
+
+## Feature underspecification (min: 0, max: 1, default: 0.25)
+underspec_cost = 0.25
+## To take into account of featural underspecification, if two feature values are the same, then the cost is 0, if different than 1. If one of the two feature values is underspecified, then it is not as bad as being different, so it has a lower cost than 1, but higher than 0. 
+## Default value: underspec_cost = 0.25, taken from PhonologicalCorpusTools (https://github.com/PhonologicalCorpusTools/CorpusTools/blob/master/corpustools/symbolsim/phono_align.py#L10)
+## If underspec_cost = 1, then underspecification is ignored, so a mismatch between 0 and another value +/- would be the same as a mismatch between + with -.
+
+################################
+## Parameters: Distance decay ##
+################################
+## Distance decay parameter (D = 1/s, default: s = 0.1739). s = sensitivity, a parameter that controls the magnitude of the advantage that very similar neighbors have in determining the outcome
+D = 1/0.1739
+## We use the value from Albright (2007) for D. The author calls it 1/s, where s = 0.1739.
+
+##################################
+## Parameters: Frequency effect ##
+##################################
+## Frequency is weighted using a quadratic equation 
+## Bailey and Hahn's 2001 has a quadratic equation for modelling linear and non-linear effects of frequency. The optimal function in their study is one which gives medium frequency words the greatest contribution. By default, we assume a monotonic relationship, therefore `freq_quad_coeff` and `freq_content_coeff` are 0, and `freq_linear_coeff` is 1. Users should experiment with different values to identify a combination of values that fits their empirical data best.
+
+# Whether to apply frequency weighting
+frequency_weighting_tf = TRUE
+
+## Quadratic coefficient to model a quadratic frequency effect 
+freq_quad_coeff = 0
+## Linear coefficient to model a linear frequency effect
+freq_linear_coeff = 1
+## The constant coefficient 
+freq_content_coeff = 0
+
+#####################################################
+## Parameters: Preprocessing input frequency values #
+#####################################################
+## The frequency type of the reference lexicon
+reference_frequency_type = 'RAW'
+## Possible types: RAW (raw token frequency) and FPM (frequency per million)
+
+## Frequency of choice: the frequency to use for GNM
+frequency_normalised_tf = FALSE
+## In Bailey and Hahn's 2001, raw token frequency was used for the log transformation.
+## An alternative would be to use normalised frequency, e.g., frequency per million
+## If frequency_normalised_tf is FALSE, then we'd use raw token frequency, otherwise we'd use normalised frequency
+## If frequency_normalised_tf is TRUE and reference_frequency_type is 'RAW', then it would normalize your RAW frequency by assuming the sum of your token frequency count is the corpus size.
+## If frequency_normalised_tf is TRUE and if the smallest value is less than 1, then we will rescale it to ensure that the smallest number is 1 or higher.
+## If frequency_normalised_tf is FALSE and reference_frequency_type is 'FPM', then it would divide it by 1000000 and multiply it by X to get the smallest FPM to be 1. Then all numbers are rounded to the closest integer.
+
+## Smoothing term for smoothing frequency values
+SMOOTHVALUE = 1e-12
+## Depending on `frequency_normalised_tf`, the frequency value to use for GNM will be whether RAW or FPM.
+## If the smallest frequency value is not above 1, then `SMOOTHVALUE` is required because log10(1) would be zero, and that would mean that words with such a frequency value would NOT be contributing to the GNM -- an effect that we will like to avoid. Smoothing would increase all values by a small amount. Increasing the smooth value will give more weight to rarer events. By default, we use a small value (Lidstone smoothing) here.
+
+
+## The function `checkParameters()` checks the input parameters for their variable type and possible values
+checkParameters <- function(iden,indel,underspec_cost,D,
+                            frequency_weighting_tf,
+                            freq_quad_coeff,freq_linear_coeff,freq_content_coeff,
+                            reference_frequency_type,frequency_normalised_tf,
+                            SMOOTHVALUE
+                            ){
+  # Check parameters. It will throw an error message if any of them are FALSE
+  assert(
+    checkmate::checkNumber(iden),
+    ((iden >= 0 & iden <= 1)),
+    checkmate::checkNumber(indel),
+    ((indel >= 0 & indel <= 1)),
+    checkmate::checkNumber(underspec_cost),
+    ((underspec_cost >= 0 & underspec_cost <= 1)),
+    checkmate::checkNumber(D),
+    checkmate::checkLogical(frequency_weighting_tf),
+    checkmate::checkNumber(freq_quad_coeff),
+    checkmate::checkNumber(freq_linear_coeff),
+    checkmate::checkNumber(freq_content_coeff),
+    checkmate::checkString(reference_frequency_type),
+    checkmate::checkChoice(reference_frequency_type,c("RAW","FPM")),
+    checkmate::checkLogical(frequency_normalised_tf),
+    checkmate::checkNumber(SMOOTHVALUE),
+    (SMOOTHVALUE >= 0),
+    combine = "and"
+  )
+}
+checkParameters(iden,indel,underspec_cost,D,
+                frequency_weighting_tf,
+                freq_quad_coeff,freq_linear_coeff,freq_content_coeff,
+                reference_frequency_type,frequency_normalised_tf,
+                SMOOTHVALUE)
+
+
+```
+
+# Step 2: Providing lexicons
+ 
+With this code we load in the reference lexicon and the test lexicon as lists of words in IPA transcription. 
+```{r Step 2a: Providing lexicons}
+ref.lexicon = read.table('data/lexicon/ref_lex.csv', sep='\t',header=FALSE)
+test.lexicon = read.table('data/lexicon/test_lex.csv', sep='\t',header=FALSE)
+```
+
+To prepare the analysis we need two more columns, a frequency column which is set to 1 as we deal with type frequency in our case. To be able to integrate lexical entries into the associative network we need to provide the information about the start and end of the entry: The new column IPA uses the original entry and adds margins as '#" if `add_word_boundary == TRUE`. We also copied the column as an additional outcome column.
+
+```{r Step 2b: Providing lexicons}
+## Reference lexicon
+ref.lexicon$Outcomes = ref.lexicon$V1
+ref.lexicon$Frequency = 1
+ref.lexicon$IPA = ref.lexicon$V1
+ref.lexicon$V1 = NULL
+
+## Test lexicon
+test.lexicon$Outcomes = test.lexicon$V1
+test.lexicon$Frequency = 1
+test.lexicon$IPA = test.lexicon$V1
+test.lexicon$V1 = NULL
+```
+
+
+# Step 3: Providing phonological features
+
+To translate IPA symbols into phonological features we read in a universal feature table. It contains phonological feature specifications for IPA symbols.
+
+```{r Step 3a: Phonological features}
+feature.table.df = read.table('data/featureChart/phoible-segments-features.tsv',
+   sep='\t',header=TRUE)
+
+```
+The feature table needs to be trimmed such that the table is reduced to only those IPA symbols which are relevant in the reference lexicon. Therefore both reference an test items and put together into one vector. IPA entries are checked against the feature table. Missing features are identified. 
+
+```{r Step 3b: Phonological features,  results=FALSE}
+all.lexicon = rbind(ref.lexicon, test.lexicon)
+
+## Check if all symbols are covered in the feature.table
+## This function extracts all unique IPA segments from a vector of IPA strings.
+grabSegmentTypes =  function(IPA_strings){
+  # Check parameters
+  checkmate::assert_character(IPA_strings)
+  
+  w=strsplit(IPA_strings,' ')
+  w= unlist(w)
+  seg.types = unique(w)
+  return(seg.types)
+}
+
+## This function checks if all vector of IPA strings are found in feature table. It returns the missing segments.
+checkIPAinFeatTable =  function(IPA_strings,feature.table.df){
+  ## Check parameters
+  checkmate::assert_character(IPA_strings)
+  checkmate::assert_data_frame(feature.table.df)
+  
+  seg.types = grabSegmentTypes(IPA_strings)
+  missing_IPAs = seg.types[!(seg.types %in% feature.table.df$segment)]
+  return(missing_IPAs)
+}
+
+Missing_IPAs = checkIPAinFeatTable(all.lexicon$IPA,feature.table.df)
+if (length(Missing_IPAs) == 0) {
+  print ("No missing IPA symbols")
+} else {
+  print (paste0('Missing ', length(Missing_IPAs), " IPA symbols: ", paste0(Missing_IPAs, collapse = ' ')))
+  print ('Please add these missing IPA symbols and their feature values to `feature.table.df` either in the text file itself or add in R after you have loaded the table')
+  knitr::knit_exit()
+}
+```
+Redundant features are identified and deleted. 
+```{r Step 3c: Phonological features, results=FALSE}
+## These lines reduces the feature table to only the segments that we need, identifying unique IPA symbols used in the current data set
+seg.types = grabSegmentTypes(all.lexicon$IPA)
+feature.table.df = subset(feature.table.df,segment%in%seg.types)
+
+## These lines reduces the features that are not needed, i.e. the features with the same value across all segments.
+redund_cols = c()
+for (col in names(feature.table.df)) {
+  if (dim(unique(feature.table.df[col]))[1] == 1){
+    redund_cols = append(redund_cols,col)
+  }
+}
+
+print(paste0(length(redund_cols), ' redundent features were found: ', paste0(redund_cols, collapse = ', ')))
+## Check dimensions before trimming
+dimensions_before_trimming = dim(feature.table.df)
+## Trimming
+feature.table.df = feature.table.df[ , -which(names(feature.table.df) %in% redund_cols)]
+## Check dimensions after trimming
+dimensions_after_trimming = dim(feature.table.df)
+
+paste0('Before feature trimming: ', dimensions_before_trimming[1], ' segments and ', dimensions_before_trimming[2], ' features')
+paste0('After feature trimming: ', dimensions_after_trimming[1], ' segments and ', dimensions_after_trimming[2], ' features')
+```
+
+# Step 4: Building a cost matrix for string similarity
+
+In the first step, we define a function `phonDistMetric_FeatureMismatchWithUnderspec` to compute the distance between two phones based on their featural similarity. In the second step, we define a function `costdict_generate` that uses `phonDistMetric_FeatureMismatchWithUnderspec` to generate a cost matrix for all the phones being used in `feature.table.df` plus insertion and deletion segments. The cost matrix contains the distance values of the pairwise combinations of all phones, insertion and deletion.
+
+```{r}
+## Our phonetic distance metric differs from the one used by the GNM model reported in Bailey and Hahn (2001). In the original model, distance was computed using a metric based on shared natural classes (Frisch, 1996), while our metric is a normalised number of feature mismatches. In a separate study by Bailey and Hahn (2005), they evaluated how well can a) feature mismatching, b) Frisch’s metric, and c) empirical phoneme confusability in a number of word similarity judgement tasks, and they found that feature mismatching performed better than Frisch’s metric. Given the findings of Bailey and Hahn (2005), we decided to employ a feature mismatching metric over Frisch’s metric for our study.    
+  
+## To take into account of featural underspecification, if two feature values are the same, then the cost is 0, if different than 1. If one of the two feature values is underspecified, then it is not as bad as being different, so it has a lower cost than 1, but higher than 0. 
+# Default value: underspec_cost = 0.25, taken from PhonologicalCorpusTools (https://github.com/PhonologicalCorpusTools/CorpusTools/blob/master/corpustools/symbolsim/phono_align.py#L10)
+## If underspec_cost = 1, then underspecification is ignored, so a mismatch between 0 and another value +/- would be the same as a mismatch between + with -.
+phonDistMetric_FeatureMismatchWithUnderspec <- function(s1,s2, feature.table.df, underspec_cost = 0.25) {
+  # Check parameters
+  checkmate::assert_string(s1)
+  checkmate::assert_string(s2)
+  checkmate::assert_data_frame(feature.table.df)
+  checkmate::assert_number(underspec_cost)
+    
+  s1_fs = subset(feature.table.df,segment == s1)
+  s1_fs$segment = NULL
+  s1_fs = as.character(s1_fs)
+  
+  s2_fs = subset(feature.table.df,segment == s2)
+  s2_fs$segment = NULL
+  s2_fs = as.character(s2_fs)
+  
+  check_feature_difference <- function(val1, val2, underspec_cost) {
+    if (val1 == val2) {
+      return (0)
+    } else if (val1 == '0' | val2 == '0') {
+      return (underspec_cost)
+    } else { 
+      return (1)
+    }
+  }
+  
+  cost_results <- numeric(length(s1_fs))
+  for (i in 1:length(s1_fs)) {
+  cost_results[i] <- check_feature_difference(s1_fs[i], s2_fs[i], underspec_cost)
+  }
+  
+  NS = sum(cost_results)
+  S_plus_NS = length(cost_results)
+  d = (NS)/(S_plus_NS)
+  return (d)
+}
+
+costdict_generate <- function(feature.table.df, iden, indel, underspec_cost) {
+  ## Check parameters
+  checkmate::assert_data_frame(feature.table.df)
+  checkmate::assert_number(iden)
+  checkmate::assert_number(indel)
+  checkmate::assert_number(underspec_cost)
+  
+  seglist = feature.table.df$segment
+  seglist = append(seglist,"_NULL_")
+  seg1_vec = c()
+  seg2_vec = c()
+  seg12_dist_vec = c()
+  for (seg1 in seglist) {
+      for (seg2 in seglist) {      
+        seg1_vec = append(seg1_vec,seg1)
+        seg2_vec = append(seg2_vec,seg2)
+        if (seg1 == seg2) {
+            dist_value = iden
+        } else {
+        	if ( (seg1 == '_NULL_' & seg2 != '_NULL_' ) | (seg1 != '_NULL_' & seg2 == '_NULL_')) { # indel
+              dist_value = indel
+        	} else {
+              dist_value = phonDistMetric_FeatureMismatchWithUnderspec(seg1,seg2,feature.table.df,underspec_cost)
+        	}
+        }
+        seg12_dist_vec = append(seg12_dist_vec,dist_value)
+      }
+  }
+  
+  ## Dataframe in long table form. The first and second columns are labels and the
+  ## third column stores the distance values
+  cost_dataframe = data.frame(seg1 = seg1_vec, seg2 = seg2_vec, dist = seg12_dist_vec)
+  
+  ## Use `long2squareform` to convert this to a matrix.
+  cost_matrix = long2squareform(cost_dataframe, symmetric = FALSE)
+  return (cost_matrix)
+}
+
+cost_matrix = costdict_generate(feature.table.df, iden, indel, underspec_cost)
+
+print(cost_matrix)
+
+# dum_output = edit_dist_string("k a s", "k a l t", delim = " ", cost_matrix, return_alignments = TRUE)
+# dum_output$alignments
+```
+
+# Step 5: Preprocessing: reference lexicon frequency 
+
+```{r}
+## Generate Frequency_RAW or Frequency_FPM column in the ref.lexicon
+if ( (reference_frequency_type == "RAW")) {
+  ref.lexicon$Frequency_RAW = ref.lexicon$Frequency
+} else if ( (reference_frequency_type == "FPM")) {
+  ref.lexicon$Frequency_FPM = ref.lexicon$Frequency
+}
+
+## If frequency_normalised_tf is TRUE and reference_frequency_type is 'RAW', then it would normalize your RAW frequency by assuming the sum of your token frequency count is the corpus size.
+if ( (reference_frequency_type == "RAW") & (frequency_normalised_tf == TRUE) ) {
+  ApproxCorpusSize = sum(ref.lexicon$Frequency_RAW)
+  ref.lexicon$Frequency_FPM =ApproxCorpusSize*1000000
+  print (paste0('We have converted your raw token frequency into frequency per million by assuming your corpus size to be ', as.character(ApproxCorpusSize), ' words'))
+}
+
+## If frequency_normalised_tf is FALSE and reference_frequency_type is 'FPM', then it would divide it by 1000000 and multiply it by ApproxCorpusSize to get the smallest FPM to be 1.
+if ( (reference_frequency_type == "FPM") & (frequency_normalised_tf == FALSE) ) {
+  ref.lexicon$Frequency_RAW = ref.lexicon$Frequency_FPM/1000000
+  ApproxCorpusSize <- 1 / min(ref.lexicon$Frequency_RAW)
+  ref.lexicon$Frequency_RAW = round(ref.lexicon$Frequency_RAW * ApproxCorpusSize)
+  print (paste0('We have converted your frequency per million into token frequency by approximating a corpus size of ', as.character(ApproxCorpusSize), ' words'))
+}
+
+## If the smallest Frequency per million is less than 1, there will be a problem after log10 transformation.
+# because the resultant values will be negative. These items with a negative log10 frequency will then be contributing negatively which is not possible. The solution is to multiply it by 10 to the power of N where N is dependent on how much scaling we'd need to make the smallest FPM > 1.
+if (frequency_normalised_tf == TRUE) {
+  # the smallest value
+  min_Frequency_FPM = min(ref.lexicon$Frequency_FPM)
+  if (min_Frequency_FPM < 1) {
+    N <- ceiling(log10(1/min_Frequency_FPM))
+    ref.lexicon$Frequency_FPM = ref.lexicon$Frequency_FPM*(10^N)
+    print (paste0('We have rescaled your frequency per million by multiplying it by ', as.character(10^N)))
+  }
+}
+
+## If the smallest frequency value (RAW or FPM) is 1, we need to smooth it to be above 1. It's because log10(1) would be zero and it would mean that that word would not contribute to the GNM. See Bailey and Hahn (2001, p.573) for how they added 2 to their token frequency to include those with a frequency value of 0.
+## We will apply lidstone smoothing 
+if ( (reference_frequency_type == "RAW")) {
+  if (min(ref.lexicon$Frequency_RAW) == 1) {
+    ref.lexicon$Frequency_RAW = ref.lexicon$Frequency_RAW + SMOOTHVALUE
+    print (paste0('We have smoothed your raw token frequency by adding ', as.character(SMOOTHVALUE)))
+  }
+} else if ( (reference_frequency_type == "FPM")) {
+  if (min(ref.lexicon$Frequency_FPM) == 1) {
+    ref.lexicon$Frequency_FPM = ref.lexicon$Frequency_FPM + SMOOTHVALUE
+    print (paste0('We have smoothed your frequency per million by adding ', as.character(SMOOTHVALUE)))
+  }
+}
+```
+
+
+# Step 6: Estimate GNM values for test items
+
+```{r}
+## Select the type of frequency based on user's input
+if (frequency_normalised_tf == TRUE) {
+  ref_lexicon_log10frequency_vec = log10(ref.lexicon$Frequency_FPM)
+} else {
+  ref_lexicon_log10frequency_vec = log10(ref.lexicon$Frequency_RAW)
+}
+
+## Generate the frequency term
+frequency_term = freq_quad_coeff * ref_lexicon_log10frequency_vec^2 + freq_linear_coeff * ref_lexicon_log10frequency_vec + freq_content_coeff
+
+## Compute the GNM scores
+GNM_results <- numeric(length(test.lexicon$IPA))
+num_reflexicon = length(ref.lexicon$IPA)
+pb = txtProgressBar(min = 0, max = length(GNM_results), initial = 0,style = 3) 
+for (i in 1:length(GNM_results)) {
+  setTxtProgressBar(pb,i)
+  test_word = test.lexicon$IPA[i]
+  
+  ## Generate the psychological distance between the test item and all the words in the reference lexicon. Result: a vector of distances
+  pairwise_dist_result <- mclapply(1:num_reflexicon, function(i) {
+                          edit_dist_string(ref.lexicon$IPA[i], test_word, delim = " ", cost_matrix)$distance
+                          }, mc.cores = Cores)
+  pairwise_dist_result = unlist(pairwise_dist_result)
+  
+  ## Multiply the distances with the decay parameter and apply the exponential function (e ≈ 2.71828)
+  exp_vec = exp(-D*pairwise_dist_result)
+  
+  ## Frequency weighting: the Element wise multiplication of the exp_vec with the frequency term
+  if (frequency_weighting_tf) {
+    freq_weighted_dist_vec = exp_vec * frequency_term
+  } else {
+    freq_weighted_dist_vec = exp_vec
+  }
+  ## Sum the values to get the GNM score
+  GNM_results[i] = sum(freq_weighted_dist_vec)
+}
+close(pb)
+
+```
+
+
+# Step 7: Output file with estimated lexical similarity
+
+Preparing an output table with GNM measures per item. 
+```{r Step 7: Output file}
+test.lexicon$Frequency = NULL
+test.lexicon$Cues = NULL
+
+test.list.with.wordlikeness = test.lexicon
+test.list.with.wordlikeness$GNM = GNM_results
+
+## Using the DT library, we can allow users to search with a data table.
+datatable(test.list.with.wordlikeness,options = list(autoWidth = TRUE), filter = list(
+  position = 'top', clear = FALSE))
+
+## Write as a tsv (tab delimited file)
+write.table(test.list.with.wordlikeness, file ="data/output/items.with.GNMwordlikelihood.tsv",sep='\t')
+```
+
+
+# Visualisation
+
+This visualisation can be useful for identifying test item that are outliers (particularly wordlike or nonwordlike).
+
+## Visualisation: optimal (weighted) univariate clustering
+
+The following code visualizes GNM results using optimal (weighted) univariate clustering.
+```{r Visualisation 1}
+# Users can select one variable from the following 
+# "GNM"
+word.likeliness.variables = c("GNM")
+for (word.likeliness.variable in word.likeliness.variables) {
+    
+    test.list.df <- test.list.with.wordlikeness[,c("Outcomes",word.likeliness.variable)]
+    
+    # Source: https://cran.r-project.org/web/packages/Ckmeans.1d.dp/vignettes/Ckmeans.1d.dp.html
+    result <- Ckmeans.1d.dp(test.list.df[,word.likeliness.variable])
+    k <- max(result$cluster)
+    colors <- brewer.pal(k, "Dark2")
+    
+    # Add cluster into to dataframe
+    cluster_center.df = data.frame(cluster = c(1:length(result$centers)), centers = result$centers)
+    test.list.df$cluster = result$cluster
+    test.list.df = merge(test.list.df,cluster_center.df, by.x= "cluster", by.y= "cluster")
+    test.list.df = test.list.df[
+      with(test.list.df, order(test.list.df$cluster, test.list.df[,word.likeliness.variable])),
+    ]
+    test.list.df = test.list.df[,c('Outcomes',word.likeliness.variable,"cluster",'centers')]
+    
+    # Create a ggplot object
+    p <- ggplot(test.list.df, aes(x = c(1:dim(test.list.df)[1]),
+                                  y = test.list.df[,2], 
+                                  color = factor(cluster), shape = factor(cluster), label = Outcomes)) +
+      geom_point(size = 3) +
+      geom_label_repel(aes(label = Outcomes),
+                      box.padding   = 0.35, 
+                      point.padding = 0.5,
+                      min.segment.length = 0,
+                      force_pull = 0.5,
+                      max.overlaps = 100,
+                      direction = 'y',
+                      segment.color = 'grey50',max.time=10)+
+      # Add dashed lines for cluster centers
+      geom_hline(data = test.list.df, aes(yintercept = centers,color = factor(cluster)), linetype = "dashed",  linewidth = 1, alpha = 0.5) +
+
+      
+      # Add titles and labels
+      labs(title = "Optimal univariate clustering with k estimated",
+           subtitle = paste("Number of clusters is estimated to be", k),
+           x = "Item index (sorted by cluster number, low to high)",y=word.likeliness.variable) +
+      # Add legend
+      scale_color_manual(values = colors[1:k], name = "Cluster") +
+      scale_shape_manual(values = 1:k, name = "Cluster") +
+      theme(legend.position = "top")
+    
+    # Print the ggplot object
+    print(p)
+}
+```
+
+
+# Session Info
+
+```{r}
+sI=sessionInfo()
+print(sI, RNG = FALSE, locale = FALSE)
+```
