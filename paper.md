@@ -61,7 +61,7 @@ The procedure assesses measures of lexical similarity to the reference lexicon f
 
 The workflow is structured into seven steps, which are explained below. The R code corresponds directly to these steps and also includes suggestions for visualizing the results.
 
-## Preparations: 
+## Preparations
 
 Required R packages are loaded (and installed if missing). The number of computing cores to be used for parallel processing is also specified.
 
@@ -80,7 +80,7 @@ For comparison with a real lexicon, we provide an English reference lexicon (`EN
 
 ## Step 3: Providing phonological features
 
-To prepare the translation of IPA entries in both lexicons into phonological features we need to provide this information about phonological features. For this purpose the phonological distinctive feature systems from PHOIBLE [@phoible] is loaded: `phoible-segments-features.tsv`.  For detailed explanation of this feature set: see https://github.com/phoible/dev/tree/master/raw-data/FEATURES. To obtain this particular version of the feature set: https://github.com/phoible/dev/blob/c71dce66f736b161e42f335f253c35706e217dbe/raw-data/FEATURES/phoible-segments-features.tsv. The feature table provides phonological feature specifications for all IPA symbols. During the procedure it is trimmed to the needs of our study: IPA symbols not occurring in the data sets are identified and deleted and additional IPA symbols can be added.
+To prepare the translation of IPA entries in both lexicons into phonological features we need to provide this information about phonological features. For this purpose the phonological distinctive feature systems from PHOIBLE [@phoible] is loaded: `phoible-segments-features.tsv`.  For detailed explanation of this feature set: see https://github.com/phoible/dev/tree/master/raw-data/FEATURES. To obtain this particular version of the feature set: [https://github.com/phoible/dev/blob/c71dce66f736b161e42f335f253c35706e217dbe/raw-data/FEATURES/phoible-segments-features.tsv](https://github.com/phoible/dev/blob/c71dce66f736b161e42f335f253c35706e217dbe/raw-data/FEATURES/phoible-segments-features.tsv). The feature table provides phonological feature specifications for all IPA symbols. During the procedure it is trimmed to the needs of our study: IPA symbols not occurring in the data sets are identified and deleted and additional IPA symbols can be added.
 
 ## Step 4: Building NDL representations
 
@@ -137,7 +137,7 @@ The procedure assesses measures of lexical similarity to the reference lexicon f
 
 Just as with the NDL implementation, the workflow is structured into seven steps, which are explained below, with Step 2 and 3 being identical for both NDL and GNM implementations. The R code corresponds directly to these steps and also includes suggestions for visualizing the results.
 
-## Preparations: 
+## Preparations
 
 
 Required R packages are loaded (and installed if missing). The number of computing cores to be used for parallel processing is also specified.
